@@ -1,74 +1,51 @@
 /* A cp clone: copies files from one place to another */
+#define _POSIX_C_SOURCE 200809L
 
-uint64_t hash(const void* key);
-int hcmpent(const void* a, const void* b);
-int open_subdir(int fd, const char* path, int follow);
-int foreach(const void* key, void* value, void* user_data);
-int freet(const void* key, void* value, void* user_data);
-int copy(char* src, char* dst);
+#include <stdio.h>
+
+#include "fs.h"
+#include "hash.h"
+
+status_t listing(int follow, const char* src);
+int list(const void* key, void* val, void* user_data);
 
 int main(int argc, char* argv[])
 {
 	if (argc < 3) {
-		fprintf(stderr, "Usage: backup SOURCE DESTINATION");
+		fprintf(stderr, "Usage: backup SOURCE DESTINATION\n");
 		return 1;
 	}
 
-	char* src = argv[1];
-	char* dst = argv[2];
+	const char* src = argv[1];
 
+	listing(0, src);
 	return 0;
 }
 
-
-int open_subdir(int fd, const char* path, int follow)
+status_t listing(int follow, const char* src)
 {
-	int flags = O_RDONLY | O_DIRECTORY;
-	if (follow == NO_FOLLOW)
-		flags |= O_NOFOLLOW;
+	struct hash_table* files = hash_create(4099, hash, hcmpent);
+	if (!files)
+		return STATUS_E(ST_ERR_HASH_CRE, "Creating hash table", NULL);
 
-	return (fd == -1)
-		? openat(AT_FDCWD, path, flags)
-		: openat(fd, path, flags);
+	traverse(src, files, follow);
+
+	int sa = 0;
+	hash_foreach(files, list, &sa);
+	hash_foreach(files, free_hent, NULL);
+	hash_destroy(files);
+
+	return STATUS(ST_OK, 0, "Listing of a directory", NULL);
 }
 
-uint64_t hash(const void* key)
+int list(const void* key, void* val, void* user_data)
 {
-	const struct hfile* f = key;
-	return f->st_ino ^ (f->st_dev << 7);
-}
-
-int hcmpent(const void* a, const void* b)
-{
-	const struct stat* st1 = a;
-	const struct stat* st2 = b;
-	if (st1->st_ino == st2->st_ino && st1->st_dev == st2->st_dev)
-		return 1;
-	return 0;
-}
-
-int freet(const void* key, void* value, void* user_data)
-{
-	free(value);
-	return 0;
-}
-
-int foreach(const void* key, void* value, void* user_data)
-{
-	int* c = user_data;
-	const struct stat* sb = key;
-	char* path = value;
-
-	if (S_ISREG(sb->st_mode)) {
-		printf("regular file, %s\n", path);
-		(*c)++;
-	}
-	return 0;
-}
-
-int copy(char* src, char* dst)
-{
-	
+	const struct kfile* k = key;
+	struct file* f = val;
+	int* nfiles = user_data;
+	(*nfiles)++;
+	printf("File name: %s, parent fd: %i, st_dev: %lu, st_ino: %lu\n",
+	       f->path, f->pfd, k->st_dev, k->st_ino);
 
 	return 0;
 }
