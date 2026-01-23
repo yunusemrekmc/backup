@@ -36,10 +36,10 @@ status_t listing(int follow, const char* src)
 	if (!files)
 		return STATUS_E(ST_ERR_HASH_CRE, "Creating hash table", NULL);
 
-	int oflags = O_DIRECTORY | O_RDONLY; 	/* flags given to open */
+	int oflags = O_NOFOLLOW; /* flags given to open */
 
 	/* Don't follow symlinks */
-	if (!follow) oflags |= O_NOFOLLOW;
+	if (follow) oflags &= ~O_NOFOLLOW;
 
 	status_t ret = traverse(src, &files, oflags);
 	if (ret.c != ST_OK) {
