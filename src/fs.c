@@ -29,6 +29,7 @@ static status_t push(struct stack* dirs, int fd, const char* name, int oflags);
 static status_t pop(struct stack* dirs);
 static char* path_concat(const char* base, const char* name);
 static inline struct kfile* hcrekey(struct stat* sb);
+static status_t searchdir(struct stack* dirs, struct hash_table** files, int oflags);
 static void* hcreval(const char* path, mode_t st_mode, off_t st_size);
 
 /* Goes through a directory recursively, and each file it founds
@@ -47,21 +48,28 @@ status_t traverse(const char* restrict path, struct hash_table** files, int ofla
 	if (ret.c != ST_OK) return ret;
 
 	while(dirs.top) {
-		struct stackdir* frame = dirs.top;
-		DIR* d = frame->dir;
-		ret = searchdir(&dirs, d, files, oflags);
+		ret = searchdir(&dirs, files, oflags);
 		if (ret.c != ST_OK) {
+			/* Permission error, rather skip */
+			if (ret.sysc == EACCES) {
+				sterr(ret);
+				status_free(ret);
+				continue;
+			}
 			goto err_free_stack;
 		}
 	}
+	
 err_free_stack:
 	while(dirs.top) pop(&dirs);
 	return ret;
 }
 
+#ifdef __GNUC__
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wcast-qual"
 #pragma GCC diagnostic ignored "-Wunused-parameter"
+#endif
 
 /* The hash table never owns the key and value. */
 /* Free them seperately. */
@@ -73,17 +81,18 @@ int free_hent(const void* key, void* value, void* user_data)
 	return 0;
 }
 
+#ifdef __GNUC__
 #pragma GCC diagnostic pop
+#endif
 
-status_t searchdir(struct stack* dirs, DIR* d, struct hash_table** files, int oflags)
+status_t searchdir(struct stack* dirs, struct hash_table** files, int oflags)
 {
-	/* We choose to only use stack for anything new
-	 * in this function for safety and simplicity.
-	 * Only the created table entries are malloc'd, and that is done indirectly,
-	 * via the hcrekey and hcreval functions. Will free those two on error.
-	 */
+	/* To hold the readdir entry, and fstatat stat struct. */
 	struct dirent* entry;
 	struct stat sb;
+	/* the directory stream at the top of the stack */
+	DIR* d = dirs->top->dir;
+	/* dynamically choose fstatat flags */
 	int statflags = 0;
 	if (oflags & O_NOFOLLOW) statflags = AT_SYMLINK_NOFOLLOW;
 
@@ -129,11 +138,6 @@ status_t searchdir(struct stack* dirs, DIR* d, struct hash_table** files, int of
 		
 		if (S_ISDIR(sb.st_mode)) {
 			status_t ret = push(dirs, dirfd(d), entry->d_name, oflags);
-			if (ret.sysc == EACCES) {
-				sterr(ret);
-				status_free(ret);
-				continue;
-			}
 			return ret;
 		}
 
@@ -166,8 +170,15 @@ static status_t push(struct stack* dirs, int fd, const char* name, int oflags)
 	DIR* d;  /* current directory's stream */
 	status_t ret = stream_subdir(fd, name, oflags, &d);
 	dir->dirname = path_concat(parent_path, name);
+	if (!dir->dirname) {
+		free(dir->name);
+		free(dir);
+		return STATUS(ST_ERR_MALLOC, errno, "Building file path", NULL);
+	}
+
 	if (ret.c != ST_OK) {
 		ret.file_target = strdup(dir->dirname);
+		free(dir->dirname);
 		free(dir->name);
 		free(dir);
 		return ret;
@@ -295,6 +306,8 @@ static inline struct kfile* hcrekey(struct stat* sb)
  */
 static void* hcreval(const char* path, mode_t st_mode, off_t st_size)
 {
+	if (!path) return NULL;
+
 	struct file* val = malloc(sizeof(struct file));
 
 	if (!val) return NULL;
