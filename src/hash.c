@@ -122,20 +122,20 @@ size_t hash_foreach(const struct hash_table* ht,
 		/* Got NULL for some reason */
 		return 0;
 
-	size_t entc;
+	size_t seen = 0;
 	size_t size = ht->size;
 	for (size_t i = 0; i < size; ++i) {
 		struct hash_entry* tp = ht->buckets[i];
 		while(tp) {
 			if (func(tp->key, tp->value, user_data))
 				/* early exit */
-				return entc;
+				return seen;
 			tp = tp->next;
-			entc++;
+			seen++;
 		}
 	}
 
-	return entc;
+	return seen;
 }
 
 /* Recursively free each hash_entry in the given hash_table struct.
@@ -231,7 +231,6 @@ struct hash_table* hash_rehash(struct hash_table* ht, size_t new_size)
 	return nht;
 }
 
-/* ht->count is size_t, by casting to double, do I risk overflows? */
 size_t hash_chksize(const struct hash_table* restrict ht, int n)
 {
 	if (((double)ht->count / ht->size) >= LOAD_FACTOR) {

@@ -42,18 +42,12 @@ status_t traverse(const char* restrict path, struct hash_table** files, int ofla
 
 	status_t ret;
 	ret = push(&dirs, -2, path, oflags);
-	if (ret.c != ST_OK) {
-		/* can't skip given root directory */
-		hash_destroy(*files);
-		return ret;
-	}
+	if (ret.c != ST_OK) return ret;
 
-	int statflags = 0;
-	if (oflags & O_NOFOLLOW) statflags = AT_SYMLINK_NOFOLLOW;
 	while(dirs.top) {
 		struct stackdir* frame = dirs.top;
 		DIR* d = frame->dir;
-		ret = searchdir(&dirs, d, files, statflags);
+		ret = searchdir(&dirs, d, files, oflags);
 		if (ret.c != ST_OK) {
 			goto err_free_stack;
 		}
@@ -61,6 +55,8 @@ status_t traverse(const char* restrict path, struct hash_table** files, int ofla
 err_free_stack:
 	while(dirs.top) {
 		struct stackdir* next = dirs.top->next;
+		free(dirs.top->name);
+		closedir(dirs.top->dir);
 		free(dirs.top);
 		dirs.top = next;
 	}
@@ -115,6 +111,11 @@ status_t searchdir(struct stack* dirs, DIR* d, struct hash_table** files, int of
 		}
 
 		struct kfile* key = hcrekey(&sb);
+		if (!key) {
+			/* couldn't allocate key */
+			pop(dirs);
+			return STATUS_E(ST_ERR_MALLOC, "Inserting hash entries", NULL);
+		}
 		if (hash_lookup(*files, key)) {
 			/* seen this file already */
 			free(key);
@@ -125,6 +126,7 @@ status_t searchdir(struct stack* dirs, DIR* d, struct hash_table** files, int of
 		if (!val || hash_insert(*files, key, val) < 0) {
 			free(val);
 			free(key);
+			pop(dirs);
 			return STATUS_E(ST_ERR_MALLOC, "Inserting hash entries", NULL);
 		}
 		
