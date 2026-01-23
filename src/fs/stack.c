@@ -1,7 +1,5 @@
 #define _POSIX_C_SOURCE 200809L
 
-#include <sys/stat.h>
-#include <sys/types.h>
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -11,7 +9,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
 
 #include "hash.h"
 #include "fs.h"
@@ -24,42 +21,47 @@
  */
 status_t push(struct stack* dirs, int fd, const char* name, int oflags)
 {
-	if (!dirs)
-		/* Got NULL for some reason */
-		return STATUS(ST_INT_ISNULL, 0, "Pushing directory", NULL);
+	status_t ret;
+	ret = STATUS(ST_INT_ISNULL, 0, "Pushing directory", NULL);
+	/* Got NULL for some reason */
+	if (!dirs) goto err_return;
 
 	struct stackdir* dir = malloc(sizeof(struct stackdir));
-	if (!dir)
-		return STATUS(ST_ERR_MALLOC, errno, "Pushing directory", NULL);
+	ret = STATUS(ST_ERR_MALLOC, errno, "Pushing directory", NULL);
+	if (!dir) goto err_return;
+
 	dir->name = strdup(name); /* Store name in a seperate buffer */
-	if (!dir->name) {
-		free(dir);
-		return STATUS(ST_ERR_MALLOC, errno, "Pushing directory", NULL);
-	}
+	if (!dir->name) goto err_free_dir;
+
 	const char* parent_path = (!dirs->top) ? "" : dirs->top->dirname;
 
 	/* Bind d stream to fd */
 	DIR* d;  /* current directory's stream */
-	status_t ret = stream_subdir(fd, name, oflags, &d);
+	ret = stream_subdir(fd, name, oflags, &d);
 	dir->dirname = path_concat(parent_path, name);
 	if (!dir->dirname) {
-		free(dir->name);
-		free(dir);
-		return STATUS(ST_ERR_MALLOC, errno, "Building file path", NULL);
+		ret = STATUS(ST_ERR_MALLOC, errno, "Building file path", NULL);
+		goto err_free_dir_name;
 	}
 
 	if (ret.c != ST_OK) {
 		ret.file_target = strdup(dir->dirname);
-		free(dir->dirname);
-		free(dir->name);
-		free(dir);
-		return ret;
+		goto err_free_dir_dirname;
 	}
 	dir->dir = d;
 	dir->next = dirs->top;
 	dirs->top = dir;
 	dirs->ndir++;
 	return STATUS(ST_OK, 0, "Pushing directory", NULL);
+
+err_free_dir_dirname:
+	free(dir->dirname);
+err_free_dir_name:
+	free(dir->name);
+err_free_dir:
+	free(dir);
+err_return:
+	return ret;
 }
 
 status_t pop(struct stack* dirs)
@@ -84,5 +86,5 @@ status_t pop(struct stack* dirs)
 	/* one directory removed */
 	dirs->ndir--;
 
-	return STATUS(ST_OK, 0, "Popping directory", NULL);	
+	return STATUS(ST_OK, 0, "Popping directory", NULL);
 }
