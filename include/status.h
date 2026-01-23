@@ -44,7 +44,7 @@ typedef enum {
 
 	/* Errors */
 	ST_ERR_PUSH_DIR,
-	ST_ERR_NOMEM,
+	ST_ERR_MALLOC,
 	ST_ERR_HASH_CRE,	/* Couldn't create a hash table */
 	ST_ERR_HASH_UPS,	/* Can't upsize hash table */
 	ST_ERR_FILERD,		/* Couldn't read file */
@@ -57,12 +57,13 @@ typedef struct {
 	stcode_t c;
 	int sysc; 		/* errno code */
 	const char* text;
-	const char* file_target; /* the file that caused the problem */
+	char* file_target; /* the file that caused the problem */
 	const char* file;	 /* C source file */
 	int line;
 } status_t;
 
 const char* stmsg(stcode_t c);
 void sterr(status_t st);
+void status_free(status_t st);
 
 #endif
