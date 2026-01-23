@@ -14,26 +14,31 @@
 static int chkprime(size_t n);
 static size_t findprime(size_t n, int nth);
 
-/* Create a hash_table struct of size `size', and populate its state.
- * hash_fn and cmp_fn are for hashing and comparing keys respectively.
+/* Creates a hash_table struct of size `size` and initializes its state.
+ * hash_fn and cmp_fn are user-provided functions for hashing and comparing
+ * keys, respectively.
  *
- * This function will not limit your freedom to give 0 as `size'.
- * What will happen after that is implementation defined: errno might be set,
- * with calloc returning a NULL pointer, or: a pointer to the allocated space
- * might be returned. It is your responsibility to not use it to access an object.
+ * If `size` is 0, the behavior is implementation-defined by your libc.
+ * The caller should not assume valid behavior from
+ * the returned pointer in that case.
+ *
+ * If memory allocation fails, the function will return NULL. The caller should
+ * check if the returned pointer is NULL and handle it appropriately.
+ *
+ * On success, a pointer to the allocated hash table is returned; on failure,
+ * NULL is returned. The caller should ensure to not access the hash table
+ * or its members if NULL is returned.
  */
 struct hash_table* hash_create(size_t size, uint64_t (*hash_fn)(const void* key),
 			       int (*cmp_fn)(const void* a, const void* b))
 {
 	struct hash_table* ht = malloc(sizeof(struct hash_table));
 	if (!ht)
-		return NULL;
+		goto err_return;
 
 	ht->buckets = calloc(size, sizeof(struct hash_entry*));
-	if (!ht->buckets) {
-		free(ht);
-		return NULL;
-	}
+	if (!ht->buckets)
+		goto err_free_ht;
 
 	ht->size = size;
 	ht->count = 0;
@@ -41,6 +46,10 @@ struct hash_table* hash_create(size_t size, uint64_t (*hash_fn)(const void* key)
 	ht->cmp_fn = cmp_fn;
 
 	return ht;
+err_free_ht:
+	free(ht);
+err_return:
+	return NULL;
 }
 
 /* Look for the key given, if found, return the value that's associated.
@@ -182,7 +191,7 @@ struct hash_table* hash_upsize(struct hash_table* restrict ht)
 
 	if (new_size == SIZE_MAX)
 		return ht;
-	
+
 	struct hash_table* nht = hash_rehash(ht, new_size);
 	if (!nht)
 		return ht;
@@ -233,12 +242,12 @@ struct hash_table* hash_rehash(struct hash_table* ht, size_t new_size)
 
 size_t hash_chksize(const struct hash_table* restrict ht, int n)
 {
-	if (((double)ht->count / ht->size) >= LOAD_FACTOR) {
+	if (((double)ht->count / (double)ht->size) >= LOAD_FACTOR) {
 		size_t next = findprime(ht->size * 2, n);
 		if (next == 0)
 			/* next overflowed */
 			return SIZE_MAX;
-		
+
 		return next;
 	}
 	return 0;
