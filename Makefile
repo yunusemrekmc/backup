@@ -11,7 +11,8 @@ INCLUDES := -Iinclude
 BASE_CFLAGS := -std=c99 -pedantic -Wall -Werror -Wpedantic -Wextra \
                -Wshadow -Wpointer-arith -Wcast-qual -Wstrict-prototypes \
                -Wmissing-prototypes -fno-exceptions -fno-unwind-tables \
-               -fno-asynchronous-unwind-tables -fstack-protector-strong
+               -fomit-frame-pointer -fno-asynchronous-unwind-tables \
+               -fstack-protector-strong
 
 # ==============================
 #  Optimization and portability
@@ -19,7 +20,7 @@ BASE_CFLAGS := -std=c99 -pedantic -Wall -Werror -Wpedantic -Wextra \
 # Optimizing the binary, and the build process
 OPTFLAGS  := -O2 -march=native -pipe
 # For debugging purposes only
-DEBUGFLAGS := -ggdb2 -Og -fsanitize=address
+DEBUGFLAGS := -ggdb2 -O0 -fno-omit-frame-pointer -fsanitize=address
 # To statically build the program, not recommended with glibc
 STATICFLAGS := -static
 # musl libc flags: I prefer statically linking when using musl
@@ -41,12 +42,12 @@ ifeq ($(MODE),debug)
   BUILD   := build/debug
 else ifeq ($(MODE),static)
   CFLAGS  := $(BASE_CFLAGS) $(OPTFLAGS) $(STATICFLAGS) $(INCLUDES)
-  LDFLAGS :=
+  LDFLAGS := -static
   BUILD   := build/static
 else ifeq ($(MODE),musl)
   CC      := musl-gcc
   CFLAGS  := $(BASE_CFLAGS) $(OPTFLAGS) $(MUSLFLAGS) $(INCLUDES)
-  LDFLAGS :=
+  LDFLAGS := -fno-pie -no-pie -static
   BUILD   := build/musl
 else
   # Default dynamic build
@@ -80,6 +81,11 @@ $(TARGET): $(OBJS)
 $(OBJ_DIR)/%.o: $(SRC_DIR)/%.c
 	@mkdir -p $(OBJ_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@
+
+# sanity checks
+check-static:
+	@file bin/backup | grep -q "statically linked" && echo "Static build OK" || \
+	 (echo "Not static! Check LDFLAGS."; exit 1)
 
 # Cleanup
 clean:
