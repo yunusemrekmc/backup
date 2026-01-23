@@ -24,14 +24,17 @@ static status_t searchdir(struct stack* dirs, struct hash_table** files, int ofl
  */
 status_t traverse(const char* restrict path, struct hash_table** files, int oflags)
 {
+	status_t ret;
 	struct stack dirs = { .top = NULL, .ndir = 0 };
+	oflags |= O_DIRECTORY;
 
 	/* the hash table is a must for safety */
-	if (!(*files))
-		return STATUS(ST_INT_ISNULL, EINVAL, "No hash table", NULL);
-	status_t ret;
+	if (!(*files)) {
+		ret = STATUS(ST_INT_ISNULL, EINVAL, "No hash table", NULL);
+		goto err_return;
+	}
 	ret = push(&dirs, -2, path, oflags);
-	if (ret.c != ST_OK) return ret;
+	if (ret.c != ST_OK) goto err_return;
 
 	while(dirs.top) {
 		ret = searchdir(&dirs, files, oflags);
@@ -45,14 +48,18 @@ status_t traverse(const char* restrict path, struct hash_table** files, int ofla
 			goto err_free_stack;
 		}
 	}
-	
+
+	return STATUS(ST_OK, 0, "Indexed directory", NULL);
+
 err_free_stack:
 	while(dirs.top) pop(&dirs);
+err_return:
 	return ret;
 }
 
 static status_t searchdir(struct stack* dirs, struct hash_table** files, int oflags)
 {
+	status_t ret;
 	/* To hold the readdir entry, and fstatat stat struct. */
 	struct dirent* entry;
 	struct stat sb;
@@ -84,7 +91,8 @@ static status_t searchdir(struct stack* dirs, struct hash_table** files, int ofl
 		struct kfile* key = hcrekey(&sb);
 		if (!key) {
 			/* couldn't allocate key */
-			return STATUS_E(ST_ERR_MALLOC, "Inserting hash entries", NULL);
+			ret = STATUS_E(ST_ERR_MALLOC, "Inserting hash entries", NULL);
+			goto err_return;
 		}
 		if (hash_lookup(*files, key)) {
 			/* seen this file already */
@@ -96,18 +104,19 @@ static status_t searchdir(struct stack* dirs, struct hash_table** files, int ofl
 		struct file* val = hcreval(full, sb.st_mode, sb.st_size);
 		free(full);
 		if (!val || hash_insert(*files, key, val) < 0) {
+			ret = STATUS_E(ST_ERR_MALLOC, "Inserting hash entries", NULL);
 			free(val);
-			free(key);
-			pop(dirs);
-			return STATUS_E(ST_ERR_MALLOC, "Inserting hash entries", NULL);
-		}
-		
-		if (S_ISDIR(sb.st_mode)) {
-			status_t ret = push(dirs, dirfd(d), entry->d_name, oflags);
-			return ret;
+			goto err_pop;
 		}
 
+		if (S_ISDIR(sb.st_mode)) {
+			return push(dirs, dirfd(d), entry->d_name, oflags);
+		}
 	}
 	pop(dirs);
 	return STATUS(ST_OK, 0, NULL, NULL);
+err_pop:
+	pop(dirs);
+err_return:
+	return ret;
 }
