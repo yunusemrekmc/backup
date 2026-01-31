@@ -22,9 +22,6 @@ static size_t findprime(size_t n, int nth);
  * The caller should not assume valid behavior from
  * the returned pointer in that case.
  *
- * If memory allocation fails, the function will return NULL. The caller should
- * check if the returned pointer is NULL and handle it appropriately.
- *
  * On success, a pointer to the allocated hash table is returned; on failure,
  * NULL is returned. The caller should ensure to not access the hash table
  * or its members if NULL is returned.
