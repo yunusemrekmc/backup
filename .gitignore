@@ -3,3 +3,4 @@ TAGS
 bin/
 build/**
 .gdb_history
+.dir-locals.el
