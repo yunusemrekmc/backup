@@ -1,5 +1,7 @@
-#include <sys/types.h>
+#define _POSIX_C_SOURCE 200809L
+
 #include <sys/stat.h>
+#include <sys/types.h>
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -14,226 +16,316 @@
 #include "fs.h"
 #include "status.h"
 
-#define SRC_NAME "fs.c"
+struct fdset {
+	int* fds;
+	int cap;
+	int used;
+};
 
-static struct stackdir {
-	int pfd; 		/* parent fd */
-	char* path;		/* relative to pfd */
+struct stackdir {
+	char* name;		/* file name */
 	DIR* dir;		/* this directory */
 	struct stackdir* next;	/* next frame */
 };
 
-static struct stack {
-	size_t ndir;		/* this many dirs */
-	struct stackdir* top;	/* any directory */
-};
+//static int freehtfiles(const void* key, void* value, void* user_data);
+static status_t push(struct stack* dirs, int fd, const char* name, int follow);
+static status_t pop(struct stack* dirs);
+static status_t open_subdir(int fd, const char* path, int follow, DIR** d);
+int closefds(void* value, void* user_data);
+static inline struct kfile* hcrekey(struct stat* sb);
+static void* hcreval(const char* path, int pfd);
+uint64_t hash(const void* key);
+int hcmpent(const void* a, const void* b);
 
-static int free_hent(const void* key, void* value, void* user_data);
-static status_t push(struct stack* dirs, int fd, char* path, DIR* d);
-
-status_t traverse(const char* restrict path)
+/* Goes through a directory recursively, and each file it founds
+ * adds it to the given hash table. Will resize the hash table appropriately,
+ * however, never owns it. Will never take the responsibility to free it.
+ */
+status_t traverse(const char* restrict path, struct hash_table* files, int follow)
 {
-	struct stack* dirs = malloc(sizeof(struct stack));
-	if (!dirs)
-		return (status_t){ST_ERR_NOMEM, errno, "Creating stack"};
+	struct stack dirs = { .top = NULL, .ndir = 0 };
 
-	int fd = openat(AT_FDCWD, path, O_DIRECTORY | O_RDONLY | O_NOFOLLOW);
-	if (fd < 0) {
-		int err = errno;
-		free(dirs);
-		return (status_t){ST_ERR_OPEN, err, "SRC_NAME: Opening directory"};
+	/* the hash table is a must for safety */
+	if (!files)
+		return STATUS(ST_INT_ISNULL, EINVAL, "No hash table", NULL);
+
+	status_t ret;
+	ret = push(&dirs, -2, path, follow);
+	if (ret.c != ST_OK) {
+		/* can't skip given root directory */
+		hash_destroy(files);
+		return ret;
 	}
 
-	DIR* d = fdopendir(fd);
-	if (!d) {
-		int err = errno;
-		free(dirs);
-		close(fd);
-		return (status_t){ST_ERR_OPEN, err, "SRC_NAME: Opening directory"};
-	}
-
-	struct hash_table* files = hash_create(4099, hash, hcmpent);
-	if (!files) {
-		int err = errno;
-		free(dirs);
-		closedir(d);
-		return (status_t){ST_ERR_NOMEM, err, "SRC_NAME: Allocating space for hash table"};
-	}
-
-	struct dirent* ent;
-	struct stat sb;
-	while ((ent = readdir(d)) != NULL) {
-		if (strcmp(ent->d_name, ".") == 0 ||
-		    strcmp(ent->d_name, "..") == 0) continue;
-		if (fstatat(fd, ent->d_name, &sb, AT_SYMLINK_NOFOLLOW) == -1) {
-			sterr((status_t){ST_ERR_FILERD, errno, "SRC_NAME: Searching directory"});
-			continue;
-		}
-
-		struct kfile* key = malloc(sizeof(struct kfile));
-		struct file* f = malloc(sizeof(struct file));
-		if (!key || !f) {
-			free(dirs);
-			closedir(d);
-			free(files);
-			return (status_t){ST_ERR_NOMEM, errno, "SRC_NAME: Allocating space for hash entry"};
-		}
-		key->st_dev = (uint64_t)sb.st_dev;
-		key->st_ino = (uint64_t)sb.st_ino;
-		f->pfd = fd;
-		f->path = strdup(ent->d_name);
-
-		if (!f->path) {
-			free(dirs);
-			closedir(d);
-			hash_foreach(files, free_hent, NULL);
-			hash_destroy(files);
-			free(key);
-			free(f);
-			return (status_t){ST_ERR_NOMEM, errno, "SRC_NAME: Storing filename"};
-		}
-		size_t nsize = hash_chksize(files);
-		struct hash_table* nfiles;
-		if (nsize > files->size) nfiles = hash_resize(files, nsize);
-		if (!nfiles) {
-			free(dirs);
-			closedir(d);
-			hash_foreach(files, free_hent, NULL);
-			hash_destroy(files);
-			free(key);
-			free(f);
-			return (status_t){ST_ERR_NOMEM, errno, "SRC_NAME: Resizing hash table"};
-		}
-
-		if (hash_insert(files, key, f) < 0) {
-			free(dirs);
-			closedir(d);
-			hash_foreach(files, free_hent, NULL);
-			hash_destroy(files);
-			free(key);
-			free(f);
-			return (status_t){ST_ERR_NOMEM, errno, "SRC_NAME: Inserting into hash table"};
-		}
-
-		if (S_ISDIR(sb.st_mode)) {
-			push(dirs, fd, ent->d_name, d);
+	int statflags = AT_SYMLINK_NOFOLLOW;
+	if (follow) statflags = 0;
+	while(dirs.top) {
+		struct stackdir* frame = dirs.top;
+		DIR* d = frame->dir;
+		ret = searchdir(&dirs, d, &files, statflags);
+		if (ret.c != ST_OK) {
+			goto err_free_stack;
 		}
 	}
+err_free_stack:
+	while(dirs.top) {
+		struct stackdir* next = dirs.top->next;
+		free(dirs.top);
+		dirs.top = next;
+	}
+	return ret;
 }
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wcast-qual"
+#pragma GCC diagnostic ignored "-Wunused-parameter"
 
 /* The hash table never owns the key and value. */
 /* Free them seperately. */
 int free_hent(const void* key, void* value, void* user_data)
 {
 	free((void*)key);
+	free(((struct file*)value)->path);
 	free(value);
 	return 0;
 }
 
 #pragma GCC diagnostic pop
 
-
-int traverse(const char* src, int dirfd, int follow)
+status_t searchdir(struct stack* dirs, DIR* d, struct hash_table** files, int statflags)
 {
-	/* Set variables */
-	dirfd = open_subdir(dirfd, src, follow);
-	DIR* dir = fdopendir(dirfd);
+	/* We choose to only use stack for anything new
+	 * in this function for safety and simplicity.
+	 * Only the created table entries are malloc'd, and that is done indirectly,
+	 * via the hcrekey and hcreval functions. Will free those two on error.
+	 */
 	struct dirent* entry;
 	struct stat sb;
-	struct hash_table* ht = hash_create(4099, hash, hcmpent);
-	/* check if we were able to open the file */
-	if (!dir) {
-		perror("main.c:44 fdopendir");
-		exit(EXIT_FAIL);
-	}
-	errno = 0;
-	while((entry = readdir(dir)) != NULL) {
-		if (strcmp(entry->d_name, ".") == 0 ||
+	while((entry = readdir(d)) != NULL) {
+		/* Skip the current and previous directory */
+		if ((strcmp(entry->d_name, ".")) == 0 ||
 		    strcmp(entry->d_name, "..") == 0) continue;
-	
-		/* Get the current file, set pointer to the next */
-		if (fstatat(dirfd, entry->d_name, &sb, AT_SYMLINK_NOFOLLOW) == -1) {
-			perror("main.c:53 fstatat");
+		errno = 0;
+		*files = hash_upsize(*files);
+		if (errno != 0)
+			return STATUS_E(ST_ERR_HASH_UPS, "Hash table upsize", NULL);
+
+		if (fstatat(dirfd(d), entry->d_name, &sb, statflags) == -1) {
+			if (errno == EACCES) {
+				sterr(STATUS_E(ST_ERR_FILERD_MD,
+					       "Reading file metadata", strdup(entry->d_name)));
+				continue;
+			}
+			return STATUS_E(ST_ERR_FILERD_MD,
+				      "Reading file metadata", strdup(entry->d_name));
+		}
+
+		struct kfile* key = hcrekey(&sb);
+		if (hash_lookup(*files, key)) {
+			/* seen this file already */
+			free(key);
 			continue;
 		}
-		if (S_ISDIR(sb.st_mode)) {
-			char* child_dir = malloc(strlen(entry->d_name) + 1);
-			strcpy(child_dir, entry->d_name);
-			traverse(child_dir, dirfd, follow);
-			free(child_dir);
-			printf("Directory");
+
+		struct file* val = hcreval(entry->d_name, dirfd(d));
+		if (!val || hash_insert(*files, key, val) < 0) {
+			free(val);
+			free(key);
+			return STATUS_E(ST_ERR_NOMEM, "Inserting hash entries", NULL);
 		}
-		else if (S_ISREG(sb.st_mode))
-			printf("File");
-		else if (S_ISLNK(sb.st_mode))
-			printf("Symlink");
-		else if (S_ISSOCK(sb.st_mode))
-			printf("Socket");
-		else if (S_ISFIFO(sb.st_mode))
-			printf("Fifo");
-
-		hash_insert(ht, &sb, entry->d_name);
 		
-		printf(" name: %s, File size: %zu, File mode: %i.\n",
-		       entry->d_name, sb.st_size, sb.st_mode & 0777);
+		if (S_ISDIR(sb.st_mode)) {
+			status_t s = push(dirs, dirfd(d), entry->d_name, statflags);
+			if (s.c != ST_OK) return s;
+			continue;
+		}
+
 	}
-	if (!entry && errno != 0) {
-		perror("main.c:74 readdir");
-		closedir(dir);
-		exit(EXIT_FAIL);
-	}
-
-	closedir(dir);
-
-	int* c = malloc(sizeof(int));
-	hash_foreach(ht, foreach, c);
-	hash_foreach(ht, freet, NULL);
-	hash_destroy(ht);
-	free(c);
-
-	return 0;
+	pop(dirs);
+	return STATUS(ST_OK, 0, NULL, NULL);
 }
 
 /* Stack owns stackdir, therefore each of its members too.
  * push will handle allocation.
  * pop will free everything in stackdir, including DIR* d.
  */
-static status_t push(struct stack* dirs, int fd, char* path, DIR* d)
+static status_t push(struct stack* dirs, int fd, const char* name, int follow)
 {
 	if (!dirs)
 		/* Got NULL for some reason */
-		return (status_t){ST_INT_ISNULL, 0, "pushing directory"};
+		return STATUS(ST_INT_ISNULL, 0, "Pushing directory", NULL);
 
-	for (size_t i = 0; i < dirs->ndir; ++i) {
-		
+	struct stackdir* dir = malloc(sizeof(struct stackdir));
+	if (!dir)
+		return STATUS(ST_ERR_NOMEM, errno, "Pushing directory", NULL);
+	dir->name = strdup(name); /* Store name in a seperate buffer */
+	if (!dir->name) {
+		free(dir);
+		return STATUS(ST_ERR_NOMEM, errno, "Pushing directory", NULL);
+	}
+	/* Bind d stream to fd */
+	DIR* d;  /* current directory's stream */
+	status_t ret = open_subdir(fd, name, follow, &d);
+	if (ret.c != ST_OK) {
+		free(dir->name);
+		free(dir);
+		return ret;
+	}
+	dir->dir = d;
+	dir->next = dirs->top;
+	dirs->top = dir;
+	dirs->ndir++;
+	return STATUS(ST_OK, 0, "Pushing directory", NULL);
+}
+
+static status_t pop(struct stack* dirs)
+{
+	if (!dirs)
+		/* Got NULL */
+		return STATUS(ST_INT_ISNULL, 0, "No stack given", NULL);
+
+	struct stackdir* dir = dirs->top;
+	if (!dir)
+		return STATUS(ST_INT_ISNULL, 0, "Empty stack", NULL);
+
+	/* Remove from top */
+	dirs->top = dir->next;
+
+	/* Free memory */
+	free(dir->name);
+	closedir(dir->dir);
+	free(dir);
+
+	/* one directory removed */
+	dirs->ndir--;
+
+	return STATUS(ST_OK, 0, "Popping directory", NULL);	
+}
+
+/* fd must refer to the parent of the target, or the path
+ * given must be absolute.
+ */
+static status_t open_subdir(int fd, const char* path, int follow, DIR** d)
+{
+	if (!path)
+		return STATUS(ST_INT_ISNULL, 0, "Opening directory", NULL);
+
+	int cfd = -2;  /* the current file descriptor */
+	int oflags = O_DIRECTORY | O_RDONLY; 	/* flags given to open */
+
+	/* Don't follow symlinks */
+	if (!follow) oflags |= O_NOFOLLOW;
+	/* Path is absolute, in such case fd is also ignored */
+	if (path[0] == '/') cfd = open(path, oflags);
+
+	/* If not absolute, open based on the value of fd.
+	 * open() will set cfd to -1 if there's an error, we prefer values
+	 * below -1.
+	 */
+	if (fd < 0 && cfd < -1)
+		cfd = openat(AT_FDCWD, path, oflags);
+	else
+		cfd = openat(fd, path, oflags);
+
+	if (cfd < 0) {
+		int err = errno;
+		return STATUS(ST_ERR_OPEN, err, "Opening directory", strdup(path));
 	}
 
-	return (status_t){ST_OK, 0, "pushing directory"};
+	*d = fdopendir(cfd);
+	if (*d == NULL) {
+		int err = errno;
+		close(fd);
+		return STATUS(ST_ERR_OPEN, err, "Opening directory", strdup(path));
+	}
+
+	return STATUS(ST_OK, 0, "Opening directory", NULL);
 }
 
-static status_t pop(struct stackdir* stdir)
+/* the caller of closefds must provide user_data with
+ * the struct type "fdset" which has three members:
+ * cap, which is the amount of allocated slots
+ * fds, which is an array of ints
+ * and used, which is the amount of slots in use
+ * returns 1 if memory allocated is exhausted
+ * hash_foreach will return early and will return the amount of
+ * hash entries seen. Compare to ht->count to see if terminated early
+ * or not, and realloc.
+ */
+int closefds(void* value, void* user_data)
 {
+	struct fdset* fdset = user_data;
+	int fd = ((struct file*)value)->pfd;
+
+	if (fd == -1) return 0;
+	if (fdset->used >= fdset->cap) return 1;
+
+	for (int i = 0; i < fdset->used; ++i)
+		if (fdset->fds[i] == fd) return 0;
+
+	if (close(fd) < 0) {
+		perror("fs.c closefds: close error");
+		return 0;
+	}
+
+	((struct file*)value)->pfd = -1;
+	fdset->fds[fdset->used++] = fd;
+	return 0;
+}
+
+/* Will create a kfile struct for use with the `files' hash table.
+ *
+ * Returns NULL on allocation failure, malloc will set errno.
+ */
+static inline struct kfile* hcrekey(struct stat* sb)
+{
+	struct kfile* key = malloc(sizeof(struct kfile));
+
+	if (!key) return NULL;
+
+	key->st_ino = (uint64_t)sb->st_ino;
+	key->st_dev = (uint64_t)sb->st_dev;
+
+	return key;
+}
+
+/* Given the relative path of the file, relative to the pfd, this function
+ * will create a file struct for use with the hash table.
+ * This function internally copies path over.
+ *
+ * Returns NULL on allocation failure, malloc will set errno to the corresponding value.
+ */
+static void* hcreval(const char* path, int pfd)
+{
+	struct file* val = malloc(sizeof(struct file));
+
+	if (!val) return NULL;
+
+	char* path_copy = strdup(path);
+	if (!path_copy) {
+		free(val);
+		return NULL;
+	}
+	val->path = path_copy;
+	val->pfd = pfd;
 	
+	return val;
 }
 
-int open_subdir(int fd, const char* path, int follow)
-{
-	int flags = O_RDONLY | O_DIRECTORY;
-	if (follow == NO_FOLLOW)
-		flags |= O_NOFOLLOW;
-
-	return (fd == -1)
-		? openat(AT_FDCWD, path, flags)
-		: openat(fd, path, flags);
-}
-
+/* Uses file inode and device number to create the hash.
+ * Uses the Murmur finalizer.
+ */
 uint64_t hash(const void* key)
 {
 	const struct kfile* f = key;
-	return f->st_ino ^ (f->st_dev << 7);
+	uint64_t k = f->st_ino ^ (f->st_dev << 7);
+	k ^= k >> 33;
+	k *= 0xff51afd7ed558ccdULL;
+	k ^= k >> 33;
+	k *= 0xc4ceb9fe1a85ec53ULL;
+	k ^= k >> 33;
+	return k;
 }
 
 int hcmpent(const void* a, const void* b)

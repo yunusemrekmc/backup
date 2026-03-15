@@ -28,8 +28,8 @@ size_t hash_foreach(const struct hash_table* ht,
 		 int (*func)(const void* key, void* value, void* user_data),
 		 void* user_data);
 void hash_destroy(struct hash_table* ht);
-struct hash_table* hash_resize(struct hash_table* ht, size_t new_size);
-size_t hash_chksize(const struct hash_table* ht);
-
+struct hash_table* hash_upsize(struct hash_table* restrict ht);
+struct hash_table* hash_rehash(struct hash_table* ht, size_t new_size);
+size_t hash_chksize(const struct hash_table* ht, int n);
 
 #endif
