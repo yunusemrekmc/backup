@@ -1,6 +1,6 @@
 TAGS
 .#*
 bin/
-build/**
+build
 .gdb_history
 .dir-locals.el
