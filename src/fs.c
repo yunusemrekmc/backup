@@ -5,6 +5,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <libgen.h>
 #include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -26,6 +27,7 @@ struct stackdir {
 //static int freehtfiles(const void* key, void* value, void* user_data);
 static status_t push(struct stack* dirs, int fd, const char* name, int oflags);
 static status_t pop(struct stack* dirs);
+static char* path_concat(const char* base, const char* name);
 static inline struct kfile* hcrekey(struct stat* sb);
 static void* hcreval(const char* path, mode_t st_mode, off_t st_size);
 
@@ -40,7 +42,6 @@ status_t traverse(const char* restrict path, struct hash_table** files, int ofla
 	/* the hash table is a must for safety */
 	if (!(*files))
 		return STATUS(ST_INT_ISNULL, EINVAL, "No hash table", NULL);
-
 	status_t ret;
 	ret = push(&dirs, -2, path, oflags);
 	if (ret.c != ST_OK) return ret;
@@ -54,9 +55,7 @@ status_t traverse(const char* restrict path, struct hash_table** files, int ofla
 		}
 	}
 err_free_stack:
-	while(dirs.top) {
-		pop(&dirs);
-	}
+	while(dirs.top) pop(&dirs);
 	return ret;
 }
 
@@ -118,7 +117,9 @@ status_t searchdir(struct stack* dirs, DIR* d, struct hash_table** files, int of
 			continue;
 		}
 
-		struct file* val = hcreval(entry->d_name, sb.st_mode, sb.st_size);
+		char* full = path_concat(dirs->top->dirname, entry->d_name);
+		struct file* val = hcreval(full, sb.st_mode, sb.st_size);
+		free(full);
 		if (!val || hash_insert(*files, key, val) < 0) {
 			free(val);
 			free(key);
@@ -131,10 +132,9 @@ status_t searchdir(struct stack* dirs, DIR* d, struct hash_table** files, int of
 			if (ret.sysc == EACCES) {
 				sterr(ret);
 				status_free(ret);
-			} else if (ret.c != ST_OK) {
-				return ret;
+				continue;
 			}
-			continue;
+			return ret;
 		}
 
 	}
@@ -160,10 +160,14 @@ static status_t push(struct stack* dirs, int fd, const char* name, int oflags)
 		free(dir);
 		return STATUS(ST_ERR_MALLOC, errno, "Pushing directory", NULL);
 	}
+	const char* parent_path = (!dirs->top) ? "" : dirs->top->dirname;
+
 	/* Bind d stream to fd */
 	DIR* d;  /* current directory's stream */
 	status_t ret = stream_subdir(fd, name, oflags, &d);
+	dir->dirname = path_concat(parent_path, name);
 	if (ret.c != ST_OK) {
+		ret.file_target = strdup(dir->dirname);
 		free(dir->name);
 		free(dir);
 		return ret;
@@ -189,6 +193,7 @@ static status_t pop(struct stack* dirs)
 	dirs->top = dir->next;
 
 	/* Free memory */
+	free(dir->dirname);
 	free(dir->name);
 	closedir(dir->dir);
 	free(dir);
@@ -219,16 +224,51 @@ status_t stream_subdir(int fd, const char* path, int oflags, DIR** d)
 	cfd = openat(dir_fd, path, oflags);
 
 	if (cfd < 0)
-		return STATUS(ST_ERR_OPEN, errno, "Opening directory", strdup(path));
+		return STATUS(ST_ERR_OPEN, errno, "Opening directory", NULL);
 
 	*d = fdopendir(cfd);
 	if (*d == NULL) {
 		int err = errno;
 		close(cfd);
-		return STATUS(ST_ERR_OPEN, err, "Opening directory", strdup(path));
+		return STATUS(ST_ERR_OPEN, err, "Opening directory", NULL);
 	}
 
 	return STATUS(ST_OK, 0, "Opening directory", NULL);
+}
+
+/* path_concat never owns
+ */
+static char* path_concat(const char* base, const char* name)
+{
+	/* Handle the special case where the argument specifies the root */
+	if (strcmp(base, "") == 0 || strcmp(base, ".") == 0)
+		return strdup(name);
+
+	size_t len = strlen(base);
+	uint8_t need_seperator = 0;
+	/* add to len because we need to append a seperator to base */
+	if (base[len - 1] != '/') {
+		len = len + 1;
+		need_seperator = 1;
+	}
+
+	/* allocate space, add 1 for NUL */
+	len = len + strlen(name) + 1;
+	char* new_path = malloc(len);
+
+	/* check if we failed allocating memory */
+	if (!new_path) return NULL;
+
+	/* copy base into new buffer */
+	strcpy(new_path, base);
+
+	/* the file path needs a seperator */
+	if (need_seperator) strcat(new_path, "/");
+
+	/* concatenate the base and the name */
+	new_path = strcat(new_path, name);
+
+	return new_path;
 }
 
 /* Will create a kfile struct for use with the `files' hash table.
