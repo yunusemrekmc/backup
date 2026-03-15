@@ -19,6 +19,7 @@
 struct stackdir {
 	char* name;		/* file name */
 	DIR* dir;		/* this directory */
+	char* dirname;		/* dirname of the current folder */
 	struct stackdir* next;	/* next frame */
 };
 
@@ -54,11 +55,7 @@ status_t traverse(const char* restrict path, struct hash_table** files, int ofla
 	}
 err_free_stack:
 	while(dirs.top) {
-		struct stackdir* next = dirs.top->next;
-		free(dirs.top->name);
-		closedir(dirs.top->dir);
-		free(dirs.top);
-		dirs.top = next;
+		pop(&dirs);
 	}
 	return ret;
 }
@@ -103,7 +100,7 @@ status_t searchdir(struct stack* dirs, DIR* d, struct hash_table** files, int of
 		if (fstatat(dirfd(d), entry->d_name, &sb, statflags) == -1) {
 			if (errno == EACCES) {
 				sterr(STATUS_E(ST_ERR_FILERD_MD,
-					       "Reading file metadata", strdup(entry->d_name)));
+					       "Reading file metadata", entry->d_name));
 				continue;
 			}
 			return STATUS_E(ST_ERR_FILERD_MD,
@@ -113,7 +110,6 @@ status_t searchdir(struct stack* dirs, DIR* d, struct hash_table** files, int of
 		struct kfile* key = hcrekey(&sb);
 		if (!key) {
 			/* couldn't allocate key */
-			pop(dirs);
 			return STATUS_E(ST_ERR_MALLOC, "Inserting hash entries", NULL);
 		}
 		if (hash_lookup(*files, key)) {
@@ -131,8 +127,13 @@ status_t searchdir(struct stack* dirs, DIR* d, struct hash_table** files, int of
 		}
 		
 		if (S_ISDIR(sb.st_mode)) {
-			status_t s = push(dirs, dirfd(d), entry->d_name, oflags);
-			if (s.c != ST_OK) return s;
+			status_t ret = push(dirs, dirfd(d), entry->d_name, oflags);
+			if (ret.sysc == EACCES) {
+				sterr(ret);
+				status_free(ret);
+			} else if (ret.c != ST_OK) {
+				return ret;
+			}
 			continue;
 		}
 
