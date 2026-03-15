@@ -54,18 +54,17 @@ status_t preparecp(struct buf* b)
  * the source and the destination file.
  * buf is a buffer prepared beforehand via preparecp()
  */
-status_t cp(int src, int dst, struct buf* buf)
+status_t cp(int src, int dst, struct buf* buf, const char* filename)
 {
 	ssize_t n;
+	status_t ret;
 	while ((n = read(src, buf->b, buf->cap)) > 0) {
-		if (n < 0) {
+		if (write_wrap(dst, buf->b, n) < 0) {
+			return STATUS_E(ST_ERR_FILEWR, "Couldn't write data", strdup(filename));
 		}
-		write_wrap(dst, buf->b, n);
 	}
 
 	return STATUS(ST_OK, 0, "Copied bytes successfully.", NULL);
-err_return:
-	return ret;
 }
 
 static ssize_t write_wrap(int fd, char* restrict buf, size_t n)
@@ -92,14 +91,21 @@ static ssize_t write_wrap(int fd, char* restrict buf, size_t n)
 			continue;
 		}
 
-		/* anything else is hard error anyway */
+		/* anything else is a hard error anyway */
 		return -1;
 	}
 
-	return total; 		/* equals n on success */
+	return total;		/* equals n on success */
+}
+
+int perkey(const void* key, void* value, void* user_data)
+{
+	
+	return 0;
 }
 
 status_t copy(const struct hash_table* files, const char* path, int oflags)
 {
+	hash_foreach(files);
 	return STATUS(ST_OK, 0, "Copied file successfully.", NULL);
 }
