@@ -31,7 +31,7 @@ void sterr(status_t st)
 		fprintf(stderr, "[%s:%d] %s (code=%d, errno=%d: %s)\n",
 			st.file, st.line,
 			st.text, st.c, st.sysc, strerror(st.sysc));
-		
+
 	return;
 }
 
