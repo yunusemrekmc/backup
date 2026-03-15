@@ -40,8 +40,7 @@ status_t stream_subdir(int fd, const char* path, int oflags, DIR** d)
 	return STATUS(ST_OK, 0, "Opening directory", NULL);
 }
 
-/* path_concat never owns
- */
+/* path_concat never owns */
 char* path_concat(const char* base, const char* name)
 {
 	/* Handle the special case where the argument specifies the root */
@@ -56,7 +55,7 @@ char* path_concat(const char* base, const char* name)
 		need_seperator = 1;
 	}
 
-	/* allocate space, add 1 for NUL */
+	/* allocate space, add 1 for NULL byte */
 	len = len + strlen(name) + 1;
 	char* new_path = malloc(len);
 
