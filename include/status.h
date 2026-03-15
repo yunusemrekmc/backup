@@ -35,22 +35,23 @@ typedef enum {
 
 	/* Internal */
 	ST_INT_ISNULL,		/* Got NULL instead of a pointer */
-	ST_INT_END,             /* END of internal declaration: easier to use in macros */
+	ST_INT_END,             /* END of internal declarations: easier to use in macros */
 
 	/* Warnings */
 	ST_WARN_NO_CRYPT,	/* No encryption */
 	ST_WARN_FILERD_MD, 	/* Couldn't read file metadata */
-	ST_WARN_END,		/* END of warning declaration: easier to use in macros */
+	ST_WARN_END,		/* END of warning declarations: easier to use in macros */
 
 	/* Errors */
 	ST_ERR_PUSH_DIR,
-	ST_ERR_MALLOC,
+	ST_ERR_MALLOC,		/* Can't get memory */
 	ST_ERR_HASH_CRE,	/* Couldn't create a hash table */
 	ST_ERR_HASH_UPS,	/* Can't upsize hash table */
 	ST_ERR_FILERD,		/* Couldn't read file */
 	ST_ERR_FILERD_MD, 	/* Couldn't read file metadata */
-	ST_ERR_OPEN,
-	ST_ERR_END		/* END of error declaration: easier to use in macros */
+	ST_ERR_FILEWR,		/* Couldn't write data */
+	ST_ERR_OPEN,		/* Couldn't open file */
+	ST_ERR_END		/* END of error declarations: easier to use in macros */
 } stcode_t;
 
 typedef struct {
