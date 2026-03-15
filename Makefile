@@ -6,19 +6,33 @@ PREFIX   ?= /usr/local
 INCLUDES := -Iinclude
 
 # ==============================
-#  Base flags (safe defaults)
+#  Base flags
 # ==============================
-BASE_CFLAGS := -std=c99 -pedantic -Wall -Werror -Wpedantic -Wextra \
-               -Wshadow -Wpointer-arith -Wcast-qual -Wstrict-prototypes \
-               -Wmissing-prototypes -fno-exceptions -fno-unwind-tables \
-               -fomit-frame-pointer -fno-asynchronous-unwind-tables \
-               -fstack-protector-strong
+BASE_CFLAGS :=  -std=c99 -pedantic -Wall -Wextra -Wshadow \
+		-Wpointer-arith -Wcast-qual -Wstrict-prototypes \
+		-Wmissing-prototypes -Wpedantic \
+		-fstack-protector-strong -fstack-protector
+
+# ==============================
+# Compiler specific flags
+# ==============================
+GCC_FLAGS :=    -fno-unwind-tables -fno-asynchronous-unwind-tables
+CLANG_FLAGS :=  -Wdocumentation -Wshorten-64-to-32 -Wconversion -Wsign-conversion
+WERROR ?= -Werror
+
+BASE_CFLAGS += $(WERROR)
+
+ifeq ($(CC), gcc)
+  BASE_CFLAGS += $(GCC_FLAGS)
+else ifeq ($(CC), clang)
+  BASE_CFLAGS += $(CLANG_FLAGS)
+endif
 
 # ==============================
 #  Optimization and portability
 # ==============================
 # Optimizing the binary, and the build process
-OPTFLAGS  := -O2 -march=native -pipe
+OPTFLAGS  := -O2 -march=native -mtune=native -pipe -fomit-frame-pointer
 # For debugging purposes only
 DEBUGFLAGS := -ggdb2 -O0 -fno-omit-frame-pointer -fsanitize=address
 # To statically build the program, not recommended with glibc
@@ -65,7 +79,7 @@ BIN_DIR := bin
 TARGET  := $(BIN_DIR)/backup
 
 # Source and object files
-SRCS := $(wildcard $(SRC_DIR)/*.c)
+SRCS := $(shell find $(SRC_DIR)/ -type f -name "*.c")
 OBJS := $(patsubst $(SRC_DIR)/%.c, $(OBJ_DIR)/%.o, $(SRCS))
 
 # Default rule
@@ -79,7 +93,7 @@ $(TARGET): $(OBJS)
 
 # Compilation rule for .c -> .o
 $(OBJ_DIR)/%.o: $(SRC_DIR)/%.c
-	@mkdir -p $(OBJ_DIR)
+	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 # sanity checks
