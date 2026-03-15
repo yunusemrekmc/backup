@@ -16,12 +16,6 @@
 #include "fs.h"
 #include "status.h"
 
-struct fdset {
-	int* fds;
-	int cap;
-	int used;
-};
-
 struct stackdir {
 	char* name;		/* file name */
 	DIR* dir;		/* this directory */
@@ -29,19 +23,16 @@ struct stackdir {
 };
 
 //static int freehtfiles(const void* key, void* value, void* user_data);
-static status_t push(struct stack* dirs, int fd, const char* name, int follow);
+static status_t push(struct stack* dirs, int fd, const char* name, int oflags);
 static status_t pop(struct stack* dirs);
-static status_t open_subdir(int fd, const char* path, int follow, DIR** d);
 static inline struct kfile* hcrekey(struct stat* sb);
 static void* hcreval(const char* path, mode_t st_mode, off_t st_size);
-uintmax_t hash(const void* key);
-int hcmpent(const void* a, const void* b);
 
 /* Goes through a directory recursively, and each file it founds
  * adds it to the given hash table. Will resize the hash table appropriately,
  * however, never owns it. Will never take the responsibility to free it.
  */
-status_t traverse(const char* restrict path, struct hash_table** files, int follow)
+status_t traverse(const char* restrict path, struct hash_table** files, int oflags)
 {
 	struct stack dirs = { .top = NULL, .ndir = 0 };
 
@@ -50,15 +41,15 @@ status_t traverse(const char* restrict path, struct hash_table** files, int foll
 		return STATUS(ST_INT_ISNULL, EINVAL, "No hash table", NULL);
 
 	status_t ret;
-	ret = push(&dirs, -2, path, follow);
+	ret = push(&dirs, -2, path, oflags);
 	if (ret.c != ST_OK) {
 		/* can't skip given root directory */
 		hash_destroy(*files);
 		return ret;
 	}
 
-	int statflags = AT_SYMLINK_NOFOLLOW;
-	if (follow) statflags = 0;
+	int statflags = 0;
+	if (oflags & O_NOFOLLOW) statflags = AT_SYMLINK_NOFOLLOW;
 	while(dirs.top) {
 		struct stackdir* frame = dirs.top;
 		DIR* d = frame->dir;
@@ -92,7 +83,7 @@ int free_hent(const void* key, void* value, void* user_data)
 
 #pragma GCC diagnostic pop
 
-status_t searchdir(struct stack* dirs, DIR* d, struct hash_table** files, int statflags)
+status_t searchdir(struct stack* dirs, DIR* d, struct hash_table** files, int oflags)
 {
 	/* We choose to only use stack for anything new
 	 * in this function for safety and simplicity.
@@ -101,6 +92,9 @@ status_t searchdir(struct stack* dirs, DIR* d, struct hash_table** files, int st
 	 */
 	struct dirent* entry;
 	struct stat sb;
+	int statflags = 0;
+	if (oflags & O_NOFOLLOW) statflags = AT_SYMLINK_NOFOLLOW;
+
 	while((entry = readdir(d)) != NULL) {
 		/* Skip the current and previous directory */
 		if ((strcmp(entry->d_name, ".")) == 0 ||
@@ -135,7 +129,7 @@ status_t searchdir(struct stack* dirs, DIR* d, struct hash_table** files, int st
 		}
 		
 		if (S_ISDIR(sb.st_mode)) {
-			status_t s = push(dirs, dirfd(d), entry->d_name, statflags);
+			status_t s = push(dirs, dirfd(d), entry->d_name, oflags);
 			if (s.c != ST_OK) return s;
 			continue;
 		}
@@ -149,7 +143,7 @@ status_t searchdir(struct stack* dirs, DIR* d, struct hash_table** files, int st
  * push will handle allocation.
  * pop will free everything in stackdir, including DIR* d.
  */
-static status_t push(struct stack* dirs, int fd, const char* name, int follow)
+static status_t push(struct stack* dirs, int fd, const char* name, int oflags)
 {
 	if (!dirs)
 		/* Got NULL for some reason */
@@ -165,7 +159,7 @@ static status_t push(struct stack* dirs, int fd, const char* name, int follow)
 	}
 	/* Bind d stream to fd */
 	DIR* d;  /* current directory's stream */
-	status_t ret = open_subdir(fd, name, follow, &d);
+	status_t ret = stream_subdir(fd, name, oflags, &d);
 	if (ret.c != ST_OK) {
 		free(dir->name);
 		free(dir);
@@ -202,76 +196,37 @@ static status_t pop(struct stack* dirs)
 	return STATUS(ST_OK, 0, "Popping directory", NULL);	
 }
 
-/* fd must refer to the parent of the target, or the path
- * given must be absolute.
+/* stream_subdir will open the path, and then create a stream to it.
+ * If the path is relative, and fd is -1, the path is assumed to be
+ * relative to the current working directory of the program,
+ * if fd is larger than -1, the path is assumed to be relative to fd.
+ * Otherwise, if the path is absolute, the path will be opened as is.
  */
-static status_t open_subdir(int fd, const char* path, int follow, DIR** d)
+status_t stream_subdir(int fd, const char* path, int oflags, DIR** d)
 {
 	if (!path)
 		return STATUS(ST_INT_ISNULL, 0, "Opening directory", NULL);
 
+	int dir_fd = (fd < 0) ? AT_FDCWD : fd; /* given fd */
 	int cfd = -2;  /* the current file descriptor */
-	int oflags = O_DIRECTORY | O_RDONLY; 	/* flags given to open */
 
-	/* Don't follow symlinks */
-	if (!follow) oflags |= O_NOFOLLOW;
-	/* Path is absolute, in such case fd is also ignored */
-	if (path[0] == '/') cfd = open(path, oflags);
-
-	/* If not absolute, open based on the value of fd.
-	 * open() will set cfd to -1 if there's an error, we prefer values
+	/* openat() will set cfd to -1 if there's an error, we prefer values
 	 * below -1.
 	 */
-	if (fd < 0 && cfd < -1)
-		cfd = openat(AT_FDCWD, path, oflags);
-	else
-		cfd = openat(fd, path, oflags);
+	cfd = openat(dir_fd, path, oflags);
 
-	if (cfd < 0) {
-		int err = errno;
-		return STATUS(ST_ERR_OPEN, err, "Opening directory", strdup(path));
-	}
+	if (cfd < 0)
+		return STATUS(ST_ERR_OPEN, errno, "Opening directory", strdup(path));
 
 	*d = fdopendir(cfd);
 	if (*d == NULL) {
 		int err = errno;
-		close(fd);
+		close(cfd);
 		return STATUS(ST_ERR_OPEN, err, "Opening directory", strdup(path));
 	}
 
 	return STATUS(ST_OK, 0, "Opening directory", NULL);
 }
-
-/* the caller of closefds must provide user_data with
- * the struct type "fdset" which has three members:
- * cap, which is the amount of allocated slots
- * fds, which is an array of ints
- * and used, which is the amount of slots in use
- * returns 1 if memory allocated is exhausted
- * hash_foreach will return early and will return the amount of
- * hash entries seen. Compare to ht->count to see if terminated early
- * or not, and realloc.
- */
-/* int closefds(void* value, void* user_data) */
-/* { */
-/* 	struct fdset* fdset = user_data; */
-/* 	int fd = ((struct file*)value)->pfd; */
-
-/* 	if (fd == -1) return 0; */
-/* 	if (fdset->used >= fdset->cap) return 1; */
-
-/* 	for (int i = 0; i < fdset->used; ++i) */
-/* 		if (fdset->fds[i] == fd) return 0; */
-
-/* 	if (close(fd) < 0) { */
-/* 		perror("fs.c closefds: close error"); */
-/* 		return 0; */
-/* 	} */
-
-/* 	((struct file*)value)->pfd = -1; */
-/* 	fdset->fds[fdset->used++] = fd; */
-/* 	return 0; */
-/* } */
 
 /* Will create a kfile struct for use with the `files' hash table.
  *
