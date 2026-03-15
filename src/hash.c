@@ -1,3 +1,11 @@
+/* License Notice */
+
+/* This hash table will never take the ownership of any key nor value.
+ * The caller must guarantee that all pointers remain valid until they are removed or
+ * the table is destroyed.
+ * The table never calls free() on any key or value. Cleanup is always the caller's responsibility.
+ */
+
 #define _POSIX_C_SOURCE 200809L
 
 #include <assert.h>
@@ -8,7 +16,7 @@
 #include "hash.h"
 
 #ifndef LOAD_FACTOR
-#define LOAD_FACTOR 0.5
+#define LOAD_FACTOR 0.7
 #endif
 
 static int chkprime(size_t n);
@@ -23,8 +31,7 @@ static size_t findprime(size_t n, int nth);
  * the returned pointer in that case.
  *
  * On success, a pointer to the allocated hash table is returned; on failure,
- * NULL is returned. The caller should ensure to not access the hash table
- * or its members if NULL is returned.
+ * NULL is returned.
  */
 struct hash_table* hash_create(size_t size, uint64_t (*hash_fn)(const void* key),
 			       int (*cmp_fn)(const void* a, const void* b))
@@ -95,10 +102,10 @@ int hash_insert(struct hash_table* ht, const void* key, void* value)
 		tp->next = ht->buckets[h];
 		ht->buckets[h] = tp;
 		ht->count++;
-		return 0; 	/* Done */
+		return 0;	/* Done */
 	}
 
-	return 1; 		/* Already here */
+	return 1;		/* Already here */
 }
 
 int hash_remove(struct hash_table* ht, const void* key)
@@ -182,7 +189,7 @@ void hash_destroy(struct hash_table* ht)
  */
 struct hash_table* hash_upsize(struct hash_table* restrict ht)
 {
-	size_t new_size = hash_chksize(ht, 10);
+	size_t new_size = hash_chksize(ht, 1);
 	if (new_size <= ht->size)
 		return ht;
 
