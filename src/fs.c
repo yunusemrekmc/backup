@@ -32,29 +32,28 @@ struct stackdir {
 static status_t push(struct stack* dirs, int fd, const char* name, int follow);
 static status_t pop(struct stack* dirs);
 static status_t open_subdir(int fd, const char* path, int follow, DIR** d);
-int closefds(void* value, void* user_data);
 static inline struct kfile* hcrekey(struct stat* sb);
-static void* hcreval(const char* path, int pfd);
-uint64_t hash(const void* key);
+static void* hcreval(const char* path, mode_t st_mode, off_t st_size);
+uintmax_t hash(const void* key);
 int hcmpent(const void* a, const void* b);
 
 /* Goes through a directory recursively, and each file it founds
  * adds it to the given hash table. Will resize the hash table appropriately,
  * however, never owns it. Will never take the responsibility to free it.
  */
-status_t traverse(const char* restrict path, struct hash_table* files, int follow)
+status_t traverse(const char* restrict path, struct hash_table** files, int follow)
 {
 	struct stack dirs = { .top = NULL, .ndir = 0 };
 
 	/* the hash table is a must for safety */
-	if (!files)
+	if (!(*files))
 		return STATUS(ST_INT_ISNULL, EINVAL, "No hash table", NULL);
 
 	status_t ret;
 	ret = push(&dirs, -2, path, follow);
 	if (ret.c != ST_OK) {
 		/* can't skip given root directory */
-		hash_destroy(files);
+		hash_destroy(*files);
 		return ret;
 	}
 
@@ -63,7 +62,7 @@ status_t traverse(const char* restrict path, struct hash_table* files, int follo
 	while(dirs.top) {
 		struct stackdir* frame = dirs.top;
 		DIR* d = frame->dir;
-		ret = searchdir(&dirs, d, &files, statflags);
+		ret = searchdir(&dirs, d, files, statflags);
 		if (ret.c != ST_OK) {
 			goto err_free_stack;
 		}
@@ -109,7 +108,7 @@ status_t searchdir(struct stack* dirs, DIR* d, struct hash_table** files, int st
 		errno = 0;
 		*files = hash_upsize(*files);
 		if (errno != 0)
-			return STATUS_E(ST_ERR_HASH_UPS, "Hash table upsize", NULL);
+			return STATUS_E(ST_ERR_HASH_UPS, "Resizing table", NULL);
 
 		if (fstatat(dirfd(d), entry->d_name, &sb, statflags) == -1) {
 			if (errno == EACCES) {
@@ -118,7 +117,7 @@ status_t searchdir(struct stack* dirs, DIR* d, struct hash_table** files, int st
 				continue;
 			}
 			return STATUS_E(ST_ERR_FILERD_MD,
-				      "Reading file metadata", strdup(entry->d_name));
+					"Reading file metadata", strdup(entry->d_name));
 		}
 
 		struct kfile* key = hcrekey(&sb);
@@ -128,11 +127,11 @@ status_t searchdir(struct stack* dirs, DIR* d, struct hash_table** files, int st
 			continue;
 		}
 
-		struct file* val = hcreval(entry->d_name, dirfd(d));
+		struct file* val = hcreval(entry->d_name, sb.st_mode, sb.st_size);
 		if (!val || hash_insert(*files, key, val) < 0) {
 			free(val);
 			free(key);
-			return STATUS_E(ST_ERR_NOMEM, "Inserting hash entries", NULL);
+			return STATUS_E(ST_ERR_MALLOC, "Inserting hash entries", NULL);
 		}
 		
 		if (S_ISDIR(sb.st_mode)) {
@@ -158,11 +157,11 @@ static status_t push(struct stack* dirs, int fd, const char* name, int follow)
 
 	struct stackdir* dir = malloc(sizeof(struct stackdir));
 	if (!dir)
-		return STATUS(ST_ERR_NOMEM, errno, "Pushing directory", NULL);
+		return STATUS(ST_ERR_MALLOC, errno, "Pushing directory", NULL);
 	dir->name = strdup(name); /* Store name in a seperate buffer */
 	if (!dir->name) {
 		free(dir);
-		return STATUS(ST_ERR_NOMEM, errno, "Pushing directory", NULL);
+		return STATUS(ST_ERR_MALLOC, errno, "Pushing directory", NULL);
 	}
 	/* Bind d stream to fd */
 	DIR* d;  /* current directory's stream */
@@ -253,26 +252,26 @@ static status_t open_subdir(int fd, const char* path, int follow, DIR** d)
  * hash entries seen. Compare to ht->count to see if terminated early
  * or not, and realloc.
  */
-int closefds(void* value, void* user_data)
-{
-	struct fdset* fdset = user_data;
-	int fd = ((struct file*)value)->pfd;
+/* int closefds(void* value, void* user_data) */
+/* { */
+/* 	struct fdset* fdset = user_data; */
+/* 	int fd = ((struct file*)value)->pfd; */
 
-	if (fd == -1) return 0;
-	if (fdset->used >= fdset->cap) return 1;
+/* 	if (fd == -1) return 0; */
+/* 	if (fdset->used >= fdset->cap) return 1; */
 
-	for (int i = 0; i < fdset->used; ++i)
-		if (fdset->fds[i] == fd) return 0;
+/* 	for (int i = 0; i < fdset->used; ++i) */
+/* 		if (fdset->fds[i] == fd) return 0; */
 
-	if (close(fd) < 0) {
-		perror("fs.c closefds: close error");
-		return 0;
-	}
+/* 	if (close(fd) < 0) { */
+/* 		perror("fs.c closefds: close error"); */
+/* 		return 0; */
+/* 	} */
 
-	((struct file*)value)->pfd = -1;
-	fdset->fds[fdset->used++] = fd;
-	return 0;
-}
+/* 	((struct file*)value)->pfd = -1; */
+/* 	fdset->fds[fdset->used++] = fd; */
+/* 	return 0; */
+/* } */
 
 /* Will create a kfile struct for use with the `files' hash table.
  *
@@ -284,8 +283,8 @@ static inline struct kfile* hcrekey(struct stat* sb)
 
 	if (!key) return NULL;
 
-	key->st_ino = (uint64_t)sb->st_ino;
-	key->st_dev = (uint64_t)sb->st_dev;
+	key->st_ino = (uintmax_t)sb->st_ino;
+	key->st_dev = (uintmax_t)sb->st_dev;
 
 	return key;
 }
@@ -296,7 +295,7 @@ static inline struct kfile* hcrekey(struct stat* sb)
  *
  * Returns NULL on allocation failure, malloc will set errno to the corresponding value.
  */
-static void* hcreval(const char* path, int pfd)
+static void* hcreval(const char* path, mode_t st_mode, off_t st_size)
 {
 	struct file* val = malloc(sizeof(struct file));
 
@@ -308,7 +307,8 @@ static void* hcreval(const char* path, int pfd)
 		return NULL;
 	}
 	val->path = path_copy;
-	val->pfd = pfd;
+	val->mode = st_mode;
+	val->size = st_size;
 	
 	return val;
 }
@@ -316,10 +316,10 @@ static void* hcreval(const char* path, int pfd)
 /* Uses file inode and device number to create the hash.
  * Uses the Murmur finalizer.
  */
-uint64_t hash(const void* key)
+uintmax_t hash(const void* key)
 {
 	const struct kfile* f = key;
-	uint64_t k = f->st_ino ^ (f->st_dev << 7);
+	uintmax_t k = f->st_ino ^ (f->st_dev << 7);
 	k ^= k >> 33;
 	k *= 0xff51afd7ed558ccdULL;
 	k ^= k >> 33;
