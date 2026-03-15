@@ -48,9 +48,9 @@ status_t listing(int follow, const char* src)
 		return ret;
 	}
 
-	size_t sa = 0;
-	hash_foreach(files, list, &sa);
-	printf("Listed this many files: %zu\n", sa);
+	size_t n = 0;
+	hash_foreach(files, list, &n);
+	printf("Listed this many files: %zu\n", n);
 	hash_foreach(files, free_hent, NULL);
 	hash_destroy(files);
 
